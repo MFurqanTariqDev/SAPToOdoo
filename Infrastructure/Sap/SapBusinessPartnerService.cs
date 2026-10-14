@@ -130,13 +130,16 @@ public sealed class SapBusinessPartnerService : ISapBusinessPartnerService
         {
             using var handle = _connectionService.Connect();
             dynamic? businessPartner = null;
+
             try
             {
-                businessPartner = handle.GetBusinessObject(SapObjectTypes.BusinessPartners, "look up the business partner");
+                businessPartner = handle.GetBusinessObject(
+                    SapObjectTypes.BusinessPartners,
+                    "create business partner");
 
                 businessPartner.CardCode = request.CardCode;
                 businessPartner.CardName = request.CardName;
-                businessPartner.CardType = SapCardTypes.Customer;
+                businessPartner.CardType = 0;
 
                 if (!string.IsNullOrWhiteSpace(request.Phone))
                 {
@@ -149,16 +152,23 @@ public sealed class SapBusinessPartnerService : ISapBusinessPartnerService
                 }
 
                 int result = businessPartner.Add();
+
                 if (result != 0)
                 {
                     int errorCode = handle.Company.GetLastErrorCode();
                     string errorMessage = handle.Company.GetLastErrorDescription();
-                    throw new SapException(ErrorCodes.SapOperationFailed, errorMessage, errorCode);
+
+                    throw new SapException(
+                        ErrorCodes.SapOperationFailed,
+                        errorMessage,
+                        errorCode);
                 }
 
                 string newCardCode = handle.Company.GetNewObjectKey();
 
-                _logger.LogInformation("SAP Business Partner {CardCode} created", newCardCode);
+                _logger.LogInformation(
+                    "SAP Business Partner {CardCode} created",
+                    newCardCode);
 
                 return new BusinessPartnerResponse
                 {
@@ -174,12 +184,15 @@ public sealed class SapBusinessPartnerService : ISapBusinessPartnerService
             }
             catch (Exception ex)
             {
-                throw new SapException(ErrorCodes.SapOperationFailed,
-                    $"Failed to create Business Partner '{request.CardCode}' in SAP: {ex.Message}", innerException: ex);
+                throw new SapException(
+                    ErrorCodes.SapOperationFailed,
+                    $"Failed to create Business Partner '{request.CardCode}' in SAP: {ex.Message}",
+                    innerException: ex);
             }
             finally
             {
-                if (businessPartner is not null && Marshal.IsComObject(businessPartner))
+                if (businessPartner is not null &&
+                    Marshal.IsComObject(businessPartner))
                 {
                     Marshal.FinalReleaseComObject(businessPartner);
                 }

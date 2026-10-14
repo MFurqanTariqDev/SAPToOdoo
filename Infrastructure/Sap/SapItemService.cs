@@ -71,7 +71,7 @@ public sealed class SapItemService : ISapItemService
             dynamic? item = null;
             try
             {
-                item = handle.GetBusinessObject(SapObjectTypes.Items, "look up the item");
+                item = handle.GetBusinessObject(SapObjectTypes.Items, "create item");
 
                 item.ItemCode = request.ItemCode;
                 item.ItemName = request.ItemName;
