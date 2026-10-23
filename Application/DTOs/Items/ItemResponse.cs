@@ -8,4 +8,12 @@ public class ItemResponse
     public DateTime? CreateDate { get; set; }
     public string? DefaultWarehouse { get; set; }
     public string? UnitOfMeasure { get; set; }
+    public List<WarehouseStockResponse> Warehouses { get; set; } = new();
+}
+
+public class WarehouseStockResponse
+{
+    public string WarehouseCode { get; set; } = string.Empty;
+    public string WarehouseName { get; set; } = string.Empty;
+    public decimal OnHand { get; set; }
 }
