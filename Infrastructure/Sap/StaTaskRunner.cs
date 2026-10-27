@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace SAPToOdoo.Infrastructure.Sap;
 
 /// <summary>
@@ -7,11 +9,31 @@ namespace SAPToOdoo.Infrastructure.Sap;
 /// </summary>
 internal static class StaTaskRunner
 {
+    private static readonly BlockingCollection<Action> Queue = new();
+
+    static StaTaskRunner()
+    {
+        var thread = new Thread(() =>
+        {
+            foreach (var job in Queue.GetConsumingEnumerable())
+            {
+                job();
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "SAP-DI-STA"
+        };
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+    }
+
     public static Task<T> RunAsync<T>(Func<T> function)
     {
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var thread = new Thread(() =>
+        Queue.Add(() =>
         {
             try
             {
@@ -21,13 +43,7 @@ internal static class StaTaskRunner
             {
                 tcs.SetException(ex);
             }
-        })
-        {
-            IsBackground = true
-        };
-
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
+        });
 
         return tcs.Task;
     }

@@ -49,10 +49,13 @@ public sealed class SapConnectionService : ISapConnectionService
         company.UserName = _options.UserName;
         company.Password = _options.Password;
         company.DbServerType = _options.DbServerType;
-        company.DbUserName = _options.DbUserName;
-        company.DbPassword = _options.DbPassword;
         company.LicenseServer = _options.LicenseServer;
-
+        // Only send a separate SQL login if one is configured.
+        if (!string.IsNullOrWhiteSpace(_options.DbUserName))
+        {
+            company.DbUserName = _options.DbUserName;
+            company.DbPassword = _options.DbPassword;
+        }
         int result;
         try
         {

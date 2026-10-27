@@ -10,7 +10,7 @@ internal static class SapObjectTypes
     public const int BusinessPartners = 2; // BoObjectTypes.oBusinessPartners
     public const int Items = 4; // BoObjectTypes.oItems
     public const int Warehouses = 64;
-
+    public const int Invoices = 13; // oInvoices (A/R Invoice)
     public const int SalesTaxCodes = 128;
     /// <summary>
     /// The Items business object only supports single-key lookup (GetByKey) — it has

@@ -28,6 +28,18 @@ public class ItemsController : ControllerBase
         return Ok(ApiResponse<IReadOnlyList<ItemResponse>>.Ok(items, correlationId, "Latest items retrieved successfully"));
     }
 
+    [HttpGet("by-warehouse")]
+    public async Task<IActionResult> GetByWarehouse([FromQuery] GetItemsByWarehouseRequest request)
+    {
+        var correlationId = HttpContext.GetCorrelationId();
+
+        var items = await _itemService.GetByWarehouseAsync(
+            request.WarehouseCode, request.Limit, request.Offset);
+
+        return Ok(ApiResponse<IReadOnlyList<ItemResponse>>.Ok(
+            items, correlationId, "Items retrieved successfully"));
+    }
+
     [HttpGet("{itemCode}")]
     public async Task<IActionResult> GetByItemCode(string itemCode)
     {

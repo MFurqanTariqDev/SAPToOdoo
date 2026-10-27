@@ -71,7 +71,7 @@ public sealed class SapItemService : ISapItemService
             dynamic? item = null;
             try
             {
-                item = handle.GetBusinessObject(SapObjectTypes.Items, "look up the item");
+                item = handle.GetBusinessObject(SapObjectTypes.Items, "create item");
 
                 item.ItemCode = request.ItemCode;
                 item.ItemName = request.ItemName;
@@ -115,49 +115,189 @@ public sealed class SapItemService : ISapItemService
         });
     }
 
-    public Task<IReadOnlyList<ItemResponse>> GetLatestAsync(int limit)
+    public Task<IReadOnlyList<ItemResponse>> GetLatestAsync(
+    int limit,
+    string? warehouseCode = null)
     {
+        limit = Math.Clamp(limit, 1, 100);
+
+        // Parse multiple comma-separated warehouse codes.
+        var warehouseCodes = string.IsNullOrWhiteSpace(warehouseCode)
+            ? new List<string>()
+            : warehouseCode
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => x.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+        if (warehouseCodes.Any(x => x.Length > 8))
+        {
+            throw new SapException(
+                ErrorCodes.SapOperationFailed,
+                "Each warehouse code must be at most 8 characters.");
+        }
+
+        // Escape single quotes in warehouse codes.
+        string warehouseInSql = string.Join(", ",
+            warehouseCodes.Select(x => $"'{x.Replace("'", "''")}'"));
+
+        bool hasWarehouseFilter = warehouseCodes.Count > 0;
+
         return StaTaskRunner.RunAsync<IReadOnlyList<ItemResponse>>(() =>
         {
             using var handle = _connectionService.Connect();
             dynamic? recordSet = null;
+
             try
             {
-                recordSet = handle.GetBusinessObjectFromCandidates(SapObjectTypes.BoRecordsetCandidates, "query the latest items");
+                recordSet = handle.GetBusinessObjectFromCandidates(
+                    SapObjectTypes.BoRecordsetCandidates,
+                    "query latest items by warehouse");
 
-                // OITM has no CreateTime column (unlike some transactional tables), so
-                // CreateDate is day-granularity only; ItemCode is a deterministic
-                // tiebreaker for same-day rows, not a substitute ordering criterion.
-                string query = $"SELECT TOP {limit} ItemCode, ItemName, ItmsGrpCod, CreateDate, DfltWH, InvntryUom " +
-                                "FROM OITM ORDER BY CreateDate DESC, ItemCode DESC";
+                // When warehouse codes are supplied, select only items
+                // that have a matching OITW record.
+                string itemFilter = hasWarehouseFilter
+                    ? $@"
+WHERE EXISTS
+(
+    SELECT 1
+    FROM OITW X
+    WHERE X.ItemCode = OITM.ItemCode
+      AND X.WhsCode IN ({warehouseInSql})
+)"
+                    : string.Empty;
+
+                // INNER JOIN ensures each returned item has a warehouse record.
+                // When a filter is supplied, include only those warehouses.
+                string warehouseJoin = hasWarehouseFilter
+                    ? $@"
+INNER JOIN OITW W
+    ON W.ItemCode = I.ItemCode
+   AND W.WhsCode IN ({warehouseInSql})
+INNER JOIN OWHS H
+    ON H.WhsCode = W.WhsCode"
+                    : @"
+INNER JOIN OITW W
+    ON W.ItemCode = I.ItemCode
+INNER JOIN OWHS H
+    ON H.WhsCode = W.WhsCode";
+
+                string query = $@"
+SELECT
+    I.ItemCode,
+    I.ItemName,
+    I.ItmsGrpCod,
+    I.CreateDate,
+    I.DfltWH,
+    I.InvntryUom,
+    W.WhsCode,
+    H.WhsName,
+    W.OnHand
+FROM
+(
+    SELECT TOP {limit}
+        ItemCode,
+        ItemName,
+        ItmsGrpCod,
+        CreateDate,
+        DfltWH,
+        InvntryUom
+    FROM OITM
+    {itemFilter}
+    ORDER BY CreateDate DESC, ItemCode DESC
+) I
+{warehouseJoin}
+ORDER BY
+    I.CreateDate DESC,
+    I.ItemCode DESC,
+    W.WhsCode";
 
                 recordSet.DoQuery(query);
 
-                var results = new List<ItemResponse>();
-                if (!(bool)recordSet.EoF)
+                var items = new List<ItemResponse>();
+                var byCode = new Dictionary<string, ItemResponse>(
+                    StringComparer.OrdinalIgnoreCase);
+
+                while (!(bool)recordSet.EoF)
                 {
-                    recordSet.MoveFirst();
-                    while (!(bool)recordSet.EoF)
+                    string itemCode =
+                        Convert.ToString(
+                            recordSet.Fields.Item("ItemCode").Value)
+                        ?? string.Empty;
+
+                    if (!byCode.TryGetValue(itemCode, out var item))
                     {
-                        object rawCreateDate = recordSet.Fields.Item("CreateDate").Value;
-                        object rawWarehouse = recordSet.Fields.Item("DfltWH").Value;
-                        object rawUom = recordSet.Fields.Item("InvntryUom").Value;
+                        object rawCreateDate =
+                            recordSet.Fields.Item("CreateDate").Value;
 
-                        results.Add(new ItemResponse
+                        string? defaultWarehouse =
+                            Convert.ToString(
+                                recordSet.Fields.Item("DfltWH").Value);
+
+                        string? uom =
+                            Convert.ToString(
+                                recordSet.Fields.Item("InvntryUom").Value);
+
+                        item = new ItemResponse
                         {
-                            ItemCode = recordSet.Fields.Item("ItemCode").Value.ToString(),
-                            ItemName = recordSet.Fields.Item("ItemName").Value.ToString(),
-                            ItemsGroupCode = Convert.ToInt32(recordSet.Fields.Item("ItmsGrpCod").Value),
-                            CreateDate = rawCreateDate is DateTime createDate ? createDate : null,
-                            DefaultWarehouse = string.IsNullOrWhiteSpace(rawWarehouse?.ToString()) ? null : rawWarehouse.ToString(),
-                            UnitOfMeasure = string.IsNullOrWhiteSpace(rawUom?.ToString()) ? null : rawUom.ToString()
-                        });
+                            ItemCode = itemCode,
 
-                        recordSet.MoveNext();
+                            ItemName =
+                                Convert.ToString(
+                                    recordSet.Fields.Item("ItemName").Value)
+                                ?? string.Empty,
+
+                            ItemsGroupCode = Convert.ToInt32(
+                                recordSet.Fields.Item("ItmsGrpCod").Value),
+
+                            CreateDate = rawCreateDate is DateTime createDate
+                                ? createDate
+                                : null,
+
+                            DefaultWarehouse =
+                                string.IsNullOrWhiteSpace(defaultWarehouse)
+                                    ? null
+                                    : defaultWarehouse,
+
+                            UnitOfMeasure =
+                                string.IsNullOrWhiteSpace(uom)
+                                    ? null
+                                    : uom
+                        };
+
+                        byCode[itemCode] = item;
+                        items.Add(item);
                     }
+
+                    string? resultWarehouseCode =
+                        Convert.ToString(
+                            recordSet.Fields.Item("WhsCode").Value);
+
+                    if (!string.IsNullOrWhiteSpace(resultWarehouseCode))
+                    {
+                        object rawOnHand =
+                            recordSet.Fields.Item("OnHand").Value;
+
+                        item.Warehouses.Add(new WarehouseStockResponse
+                        {
+                            WarehouseCode = resultWarehouseCode,
+
+                            WarehouseName =
+                                Convert.ToString(
+                                    recordSet.Fields.Item("WhsName").Value)
+                                ?? string.Empty,
+
+                            OnHand = rawOnHand is null || rawOnHand is DBNull
+                                ? 0m
+                                : Convert.ToDecimal(rawOnHand)
+                        });
+                    }
+
+                    recordSet.MoveNext();
                 }
 
-                return (IReadOnlyList<ItemResponse>)results;
+                return (IReadOnlyList<ItemResponse>)items;
             }
             catch (SapException)
             {
@@ -165,8 +305,10 @@ public sealed class SapItemService : ISapItemService
             }
             catch (Exception ex)
             {
-                throw new SapException(ErrorCodes.SapOperationFailed,
-                    $"Failed to retrieve latest items from SAP: {ex.Message}", innerException: ex);
+                throw new SapException(
+                    ErrorCodes.SapOperationFailed,
+                    $"Failed to retrieve latest items from SAP: {ex.Message}",
+                    innerException: ex);
             }
             finally
             {
@@ -227,6 +369,164 @@ public sealed class SapItemService : ISapItemService
                 if (item is not null && Marshal.IsComObject(item))
                 {
                     Marshal.FinalReleaseComObject(item);
+                }
+            }
+        });
+    }
+
+    public Task<IReadOnlyList<ItemResponse>> GetByWarehouseAsync(IEnumerable<string> warehouseCodes, int limit = 20, int offset = 0)
+    {
+        limit = Math.Clamp(limit, 1, 100);
+        offset = Math.Max(offset, 0);
+
+        // Accept repeated parameters and comma-separated values, in any mix.
+        var codes = (warehouseCodes ?? Enumerable.Empty<string>())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .SelectMany(x => x.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            .Select(x => x.Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (codes.Count == 0)
+        {
+            throw new SapException(
+                ErrorCodes.SapOperationFailed,
+                "At least one warehouseCode is required.");
+        }
+
+        if (codes.Count > 50)
+        {
+            throw new SapException(
+                ErrorCodes.SapOperationFailed,
+                "At most 50 warehouse codes can be requested at once.");
+        }
+
+        if (codes.Any(x => x.Length > 8))
+        {
+            throw new SapException(
+                ErrorCodes.SapOperationFailed,
+                "Each warehouse code must be at most 8 characters.");
+        }
+
+        string warehouseInSql = string.Join(", ",
+            codes.Select(x => $"'{x.Replace("'", "''")}'"));
+
+        return StaTaskRunner.RunAsync<IReadOnlyList<ItemResponse>>(() =>
+        {
+            using var handle = _connectionService.Connect();
+            dynamic? recordSet = null;
+
+            try
+            {
+                recordSet = handle.GetBusinessObjectFromCandidates(
+                    SapObjectTypes.BoRecordsetCandidates,
+                    "query items by warehouse");
+
+                // Step 1 (inner query): pick one page of items that have a stock
+                //   record in the requested warehouse(s).
+                // Step 2 (joins): attach only the requested warehouses to each item.
+                string query = $@"
+SELECT
+    I.ItemCode,
+    I.ItemName,
+    I.ItmsGrpCod,
+    I.CreateDate,
+    I.DfltWH,
+    I.InvntryUom,
+    W.WhsCode,
+    H.WhsName,
+    W.OnHand
+FROM
+(
+    SELECT
+        O.ItemCode,
+        O.ItemName,
+        O.ItmsGrpCod,
+        O.CreateDate,
+        O.DfltWH,
+        O.InvntryUom
+    FROM OITM O WITH (NOLOCK)
+    WHERE EXISTS
+    (
+        SELECT 1
+        FROM OITW X WITH (NOLOCK)
+        WHERE X.ItemCode = O.ItemCode
+          AND X.WhsCode IN ({warehouseInSql})
+    )
+    ORDER BY O.CreateDate DESC, O.ItemCode DESC
+    OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
+) I
+INNER JOIN OITW W WITH (NOLOCK)
+    ON W.ItemCode = I.ItemCode
+   AND W.WhsCode IN ({warehouseInSql})
+INNER JOIN OWHS H WITH (NOLOCK)
+    ON H.WhsCode = W.WhsCode
+ORDER BY
+    I.CreateDate DESC,
+    I.ItemCode DESC,
+    W.WhsCode";
+
+                recordSet.DoQuery(query);
+
+                var items = new List<ItemResponse>();
+                var byCode = new Dictionary<string, ItemResponse>(StringComparer.OrdinalIgnoreCase);
+
+                while (!(bool)recordSet.EoF)
+                {
+                    string itemCode =
+                        Convert.ToString(recordSet.Fields.Item("ItemCode").Value) ?? string.Empty;
+
+                    if (!byCode.TryGetValue(itemCode, out var item))
+                    {
+                        object rawCreateDate = recordSet.Fields.Item("CreateDate").Value;
+                        string? dfltWh = Convert.ToString(recordSet.Fields.Item("DfltWH").Value);
+                        string? uom = Convert.ToString(recordSet.Fields.Item("InvntryUom").Value);
+
+                        item = new ItemResponse
+                        {
+                            ItemCode = itemCode,
+                            ItemName = Convert.ToString(recordSet.Fields.Item("ItemName").Value) ?? string.Empty,
+                            ItemsGroupCode = Convert.ToInt32(recordSet.Fields.Item("ItmsGrpCod").Value),
+                            CreateDate = rawCreateDate is DateTime createDate ? createDate : null,
+                            DefaultWarehouse = string.IsNullOrWhiteSpace(dfltWh) ? null : dfltWh,
+                            UnitOfMeasure = string.IsNullOrWhiteSpace(uom) ? null : uom
+                        };
+
+                        byCode[itemCode] = item;
+                        items.Add(item);
+                    }
+
+                    object rawOnHand = recordSet.Fields.Item("OnHand").Value;
+
+                    item.Warehouses.Add(new WarehouseStockResponse
+                    {
+                        WarehouseCode = Convert.ToString(recordSet.Fields.Item("WhsCode").Value) ?? string.Empty,
+                        WarehouseName = Convert.ToString(recordSet.Fields.Item("WhsName").Value) ?? string.Empty,
+                        OnHand = rawOnHand is null || rawOnHand is DBNull ? 0m : Convert.ToDecimal(rawOnHand)
+                    });
+
+                    recordSet.MoveNext();
+                }
+
+                return (IReadOnlyList<ItemResponse>)items;
+            }
+            catch (SapException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new SapException(
+                    ErrorCodes.SapOperationFailed,
+                    $"Failed to retrieve items by warehouse from SAP: {ex.Message}",
+                    innerException: ex);
+            }
+            finally
+            {
+                if (recordSet is not null && Marshal.IsComObject(recordSet))
+                {
+                    Marshal.FinalReleaseComObject(recordSet);
                 }
             }
         });

@@ -39,6 +39,8 @@ builder.Services.AddScoped<ISapItemService, SapItemService>();
 builder.Services.AddScoped<ISapWarehouseService, SapWarehouseService>();
 builder.Services.AddScoped<ISapTaxService, SapTaxService>();
 builder.Services.AddScoped<ISapTableExplorerService,SapTableExplorerService>();
+builder.Services.AddScoped<ISapDiagnosticsService, SapDiagnosticsService>();
+builder.Services.AddScoped<ISapInvoiceService, SapInvoiceService>();
 
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {

@@ -20,6 +20,37 @@ public class BusinessPartnersController : ControllerBase
         _logger = logger;
     }
 
+    [HttpGet]
+    public async Task<IActionResult> GetAll(
+    [FromQuery] string? search,
+    [FromQuery] string? cardCode,
+    [FromQuery] string? cardName,
+    [FromQuery] string? cardType,
+    [FromQuery] int? limit)
+    {
+        var correlationId = HttpContext.GetCorrelationId();
+        var stopwatch = Stopwatch.StartNew();
+
+        var result = await _businessPartnerService.GetAsync(
+            search,
+            cardCode,
+            cardName,
+            cardType,
+            limit);
+
+        stopwatch.Stop();
+
+        _logger.LogInformation(
+            "SAP GetBusinessPartners completed in {ElapsedMs}ms, Count={Count}",
+            stopwatch.ElapsedMilliseconds,
+            result.Count);
+
+        return Ok(
+            ApiResponse<IReadOnlyList<BusinessPartnerListResponse>>.Ok(
+                result,
+                correlationId));
+    }
+
     [HttpGet("{cardCode}")]
     public async Task<IActionResult> GetByCardCode(string cardCode)
     {
